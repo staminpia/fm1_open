@@ -175,6 +175,24 @@ static unsigned step_first(const struct groove_view *v)
 {
     return ((step_follow && v->playing ? v->play_step : cursor) % v->sequence_length) & ~15U;
 }
+static const char *const child_tracks[] = {"FROG", "GIRAFFE", "BIRD", "CAT"};
+static const uint8_t child_animals[4][8] = {
+    {0x00,0x42,0x7e,0x7e,0x5a,0x7e,0x7e,0x66},
+    {0x24,0x3c,0x3c,0x18,0x18,0x7e,0x7e,0x66},
+    {0x18,0x3c,0x7e,0x5a,0x3c,0x18,0x0c,0x06},
+    {0x42,0x66,0x7e,0x5a,0x7e,0x3c,0x3c,0x66}
+};
+static void child_animal_draw(unsigned animal, unsigned x, unsigned y,
+                              uint16_t color, uint16_t background)
+{
+    const uint8_t *shape = child_animals[animal];
+    for (unsigned row = 0; row < 8; ++row)
+        for (unsigned col = 0; col < 8; ++col)
+            if (shape[row] & (1U << col))
+                paint_fill(x + col * 3, y + row * 3, 3, 3, color);
+    paint_fill(x + 2 * 3, y + 2 * 3, 3, 3, background);
+    paint_fill(x + 5 * 3, y + 2 * 3, 3, 3, background);
+}
 static uint8_t operator_page[GROOVE_TRACKS][8], operator_selected[GROOVE_TRACKS],
     lfo_page[GROOVE_TRACKS];
 static uint8_t tone_pages[GROOVE_TRACKS][GROOVE_PADS + 1], drum_parts[GROOVE_TRACKS];
@@ -499,55 +517,32 @@ static __attribute__((noinline)) void overview(const struct groove_view v[8])
 {
     if (paint_rendering && (paint_top >= 190 || paint_top + PAINT_ROWS <= 32)) return;
     unsigned first = step_first(&v[track]);
-    char project_name[13]; groove_project_name(project_name);
-    uint32_t title = signature(first / 16 | (step_follow << 3) | (cursor << 4) |
-        ((unsigned)v[track].sequence_length << 10), project_name, 12);
+    uint32_t title = track | (v[track].playing << 3) |
+        (v[track].sequence_length << 4) | (first << 11);
     if (title != cache->title_cache) {
         cache->title_cache = title;
         paint_fill(0, 32, 240, 13, BACK);
-        text(8, 35, project_name, 1, ACCENT, BACK);
-        text(86, 35, "OPEN " FM1_RELEASE_VERSION, 1, DIM, BACK);
-        text(146, 35, step_follow ? "PAGE" : "STEP", 1, DIM, BACK);
-        number(178, 35, step_follow ? first + 1 : cursor + 1, 2, 1, TEXT, BACK);
-        text(190, 35, step_follow ? "-" : "/", 1, DIM, BACK);
-        number(196, 35, step_follow ? first + 16 : v[track].sequence_length, 2, 1, TEXT, BACK);
+        text(8, 35, "GROOVEBOX", 1, ACCENT, BACK);
+        text(92, 35, child_tracks[track & 3U], 1, colors[track & 3U], BACK);
+        text(174, 35, v[track].playing ? "PLAY" : "STOP", 1,
+             v[track].playing ? GREEN : DIM, BACK);
     }
-    static const char *const chip_names[] = {"PSG YM", "PSG AY", "PSG NOIS", "PSG MIX"};
-    for (unsigned t = 0; t < 8; ++t) {
-        unsigned y = 48 + 18 * t;
-        if (paint_rendering && (y >= paint_top + PAINT_ROWS || y + 16 <= paint_top)) continue;
-        uint32_t meta = v[t].program | ((uint32_t)v[t].volume << 7) | ((t == track) << 14) |
-                        ((uint32_t)v[t].modified << 15) | ((uint32_t)v[t].muted << 16) |
-                        ((uint32_t)v[t].solo << 17) | ((uint32_t)v[t].ready << 18) |
-                        ((uint32_t)v[t].type << 19) | ((uint32_t)midi_active[t] << 22) |
-                        ((uint32_t)groove_track_role(t) << 23);
+    for (unsigned t = 0; t < 4; ++t) {
+        unsigned y = 48 + 35 * t;
+        if (paint_rendering && (y >= paint_top + PAINT_ROWS || y + 34 <= paint_top)) continue;
+        uint32_t meta = v[t].volume | ((uint32_t)(t == track) << 7) |
+                        ((uint32_t)v[t].muted << 8) | ((uint32_t)v[t].playing << 9) |
+                        ((uint32_t)v[t].audible << 10) | ((uint32_t)midi_active[t] << 11);
         if (meta != cache->row_cache[t]) {
             cache->row_cache[t] = meta;
-            paint_fill(5, y, 71, 16, BACK);
             uint16_t bg = t == track ? colors[t] : PANEL;
-            paint_fill(6, y, 18, 16, bg);
-            number(12, y + 5, t + 1, 1, 1, t == track ? BACK : colors[t], bg);
-            paint_fill(7, y + 12, 3, 3, midi_active[t] ? GREEN : bg);
-            char fm_name[8]={0}; uint8_t patch[156];
-            if (v[t].type==GROOVE_DX7 && !groove_fm_copy(t,patch,NULL)) memcpy(fm_name,patch+145,7);
-            text(29, y + 1,
-                 !v[t].ready                  ? "ERROR"
-                 : v[t].type == GROOVE_DX7    ? fm_name
-                 : v[t].type == GROOVE_303    ? (v[t].program ? "303 SQR" : "303 SAW")
-                 : v[t].type == GROOVE_PSG    ? chip_names[v[t].program & 3U]
-                 : v[t].type == GROOVE_PLUCK  ? "PLUCK"
-                 : v[t].type == GROOVE_SAMPLE ? "SAMPLER"
-                                              : "808 KIT",
-                 1, colors[t], BACK);
-            text(29, y + 9,
-                 groove_track_role(t) == GROOVE_TRACK_OFF ? "OFF"
-                 : groove_track_role(t) == GROOVE_TRACK_PLAY ? (v[t].muted ? "P MUT" : v[t].solo ? "P SOLO" : "PLAY")
-                 : v[t].muted      ? "MUTE"
-                 : v[t].solo     ? "SOLO"
-                 : v[t].modified ? "EDITED"
-                                 : "",
-                 1, DIM, BACK);
-            number(214, y + 1, v[t].volume, 3, 1, t == track ? TEXT : DIM, BACK);
+            paint_fill(5, y, 78, 34, BACK);
+            paint_fill(6, y + 1, 78, 32, bg);
+            child_animal_draw(t, 9, y + 5, t == track ? BACK : colors[t], bg);
+            text(36, y + 7, child_tracks[t], 1, t == track ? BACK : colors[t], bg);
+            text(36, y + 19, v[t].muted ? "SLEEP" : v[t].playing ? "PLAY" : "READY",
+                 1, t == track ? BACK : DIM, bg);
+            number(74, y + 19, t + 1, 1, 1, t == track ? BACK : DIM, bg);
         }
         for (unsigned i = 0; i < 16; ++i) {
             unsigned step = first + i;
@@ -559,19 +554,19 @@ static __attribute__((noinline)) void overview(const struct groove_view v[8])
             if (sig == cache->cell_cache[t][i])
                 continue;
             cache->cell_cache[t][i] = sig;
-            unsigned x = 80 + i * 8;
-            paint_fill(x, y + 3, 6, 11, selected ? TEXT : BACK);
-            paint_fill(x + 1, y + 5, 4, 8, on ? (v[t].audible ? colors[t] : DIM) : enabled ? PANEL : BACK);
+            unsigned x = 88 + i * 8;
+            paint_fill(x, y + 4, 6, 25, selected ? TEXT : BACK);
+            paint_fill(x + 1, y + 9, 4, 18, on ? (v[t].audible ? colors[t] : DIM) : enabled ? PANEL : BACK);
             if (head)
-                paint_fill(x, y + 3, 6, 2, GREEN);
+                paint_fill(x, y + 4, 6, 3, GREEN);
         }
         unsigned meter = v[t].audible ? (v[t].level * 14 + 63) / 127 : 0;
         unsigned meter_signature = meter | (v[t].level >= 124 ? 16U : 0U);
         if (meter_signature != cache->meter_cache[t]) {
             cache->meter_cache[t] = meter_signature;
-            paint_fill(216, y + 11, 14, 3, PANEL);
+            paint_fill(216, y + 27, 14, 3, PANEL);
             if (meter)
-                paint_fill(216, y + 11, meter, 3, v[t].level >= 124 ? AMBER : colors[t]);
+                paint_fill(216, y + 27, meter, 3, v[t].level >= 124 ? AMBER : colors[t]);
         }
     }
 }
@@ -1557,7 +1552,7 @@ static void draw_page_body(const struct fm1_ble_status *ble)
                                                              : "STEP REC - PLAY KEYS  REC TO FINISH"
                        : visible == OVERVIEW && (previous_buttons & BUTTON(HOME))
                            ? "PRESETS SOURCE  EDIT PARAMETERS"
-                       : visible == OVERVIEW ? "PRESETS PRESET  ALGO ENGINE"
+                       : visible == OVERVIEW ? "OCT- FROG  OCT+ ELPH  FX BIRD  SCL CAT"
                        : visible == STEPS    ? "PRESETS STEP  OCT PAGE  HOLD SEQ MORE"
                        : visible == MIX      ? "KEYS MUTE/SOLO  GLO / HOME BACK"
                        : visible == FM_EDIT  ? "BLACK OP  SELECT PAGE  EDIT BACK"
@@ -1815,7 +1810,7 @@ void groove_screen_init(void)
 static void select_track(int delta)
 {
     unsigned before = track;
-    track = (unsigned)clamp((int)track + delta, 0, 7);
+    track = (unsigned)clamp((int)track + delta, 0, page == OVERVIEW ? 3 : 7);
     if (page == FM_QUICK && groove_source_type(track) != GROOVE_DX7) page = TONE_EDIT;
     if (page == TONE_EDIT && !advanced_edit && groove_source_type(track) == GROOVE_DX7) page = FM_QUICK;
     if ((groove_source_type(track) != GROOVE_DX7 && page == FM_EDIT) ||
@@ -1903,6 +1898,14 @@ static int apply_controls(const struct fm1_controls *controls, uint32_t now,
         arp_down = arp_long = seq_down = rec_down = 0;
         groove_edit_record(0, track, cursor);
         return 1;
+    }
+    if (page == OVERVIEW && (pressed & 0x0fU)) {
+        unsigned selected = 0;
+        while (selected < 4 && !(pressed & BUTTON(selected))) ++selected;
+        if (selected < 4) {
+            select_track((int)selected - (int)track);
+            goto controls_done;
+        }
     }
     /* A project received over MIDI can replace the current instrument while
      * its editor is open. Leave editors that cannot apply to the new source. */
@@ -2486,6 +2489,8 @@ static int apply_controls(const struct fm1_controls *controls, uint32_t now,
         }
     }
 controls_done:
+    if (page == OVERVIEW && track >= 4)
+        select_track(-(int)(track & ~3U));
     if (page != old_page) {
         glo_down = glo_used = action_confirm = ble_forget = project_reload = 0;
         if (!(pressed & BUTTON(EDIT))) edit_down = 0;
@@ -2789,10 +2794,10 @@ const void *groove_screen_web_targets(void)
     if (page != BLE && page != PROJECT && page != PRESET_BROWSER && !v.clock_mode)
         web_target(6, 4, 65, 23, 1, 0, track, "BPM", v.tempo, NULL);
     if (page == OVERVIEW) {
-        for (unsigned t = 0; t < 8; ++t) {
+        for (unsigned t = 0; t < 4; ++t) {
             struct groove_view row; groove_get_view(t, cursor, &row);
             char label[16] = "T1 LEVEL"; label[1] += t;
-            web_target(210, 48 + t * 18, 27, 16, 2, 0, t, label, row.volume, NULL);
+            web_target(210, 48 + t * 35, 27, 34, 2, 0, t, label, row.volume, NULL);
         }
     } else if (page == STEPS) {
         web_target(172, 31, 60, 17, 8, 0, track, "LOOP LENGTH", v.next_length, NULL);
